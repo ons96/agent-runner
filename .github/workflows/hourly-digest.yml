@@ -5,16 +5,17 @@ name: hourly-digest
 #   - manual dispatch (Run workflow button)
 #   - repository_dispatch "request-digest" event (lets another repo ping us)
 #
-# Reads ons96/task-board (public), picks top status:new issues by priority +
-# reaction, posts a markdown digest as a single issue comment (idempotent via
-# a stable marker so we never double-post). Optional secrets:
-#   GITHUB_DISPATCH_TOKEN    fine-grained PAT w/ repo scope on agent-runner,
-#                            needed only if you flip DISPATCH_ONLY=true to
-#                            forward to a private runner repo via
-#                            repository_dispatch. Default: digest posts here.
-#   TASKBOARD_REPO           "owner/repo" override (default ons96/task-board).
-#   DIGEST_TOP_N             default 5.
-#   DIGEST_DRY_RUN           "true" to log and exit, no API writes.
+# Self-checkout agent-runner for scripts/digest.sh. digest.sh uses gh API only
+# (no task-board file reads), posts digest as new issue in agent-runner with
+# --repo flag pointing at task-board. DISPATCH_TOKEN secret (PAT w/ repo scope)
+# is required for task-board reads + writes via gh API; default GITHUB_TOKEN
+# only has agent-runner scope (public) and cannot read private task-board.
+#
+# Optional secrets/vars:
+#   DISPATCH_TOKEN            PAT w/ repo scope on task-board. REQUIRED.
+#   TASKBOARD_REPO            "owner/repo" override (default ons96/task-board).
+#   DIGEST_TOP_N              default 5.
+#   DIGEST_DRY_RUN            "true" to log and exit, no API writes.
 
 on:
   schedule:
@@ -41,23 +42,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GITHUB_DISPATCH_TOKEN: ${{ secrets.GITHUB_DISPATCH_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       TASKBOARD_REPO: ${{ vars.TASKBOARD_REPO || 'ons96/task-board' }}
       DIGEST_TOP_N: ${{ github.event.inputs.top_n || '5' }}
       DIGEST_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ env.TASKBOARD_REPO }}
-          token: ${{ secrets.DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
-          sparse-checkout: .
           fetch-depth: 1
-          persist-credentials: false
 
       - name: Install gh
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gh jq >/dev/null
 
       - name: Build + post digest
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
         run: bash scripts/digest.sh
