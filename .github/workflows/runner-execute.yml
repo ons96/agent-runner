@@ -1,0 +1,54 @@
+name: Public Runner Execute (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      packet_file:
+        description: 'Path to packet.json (relative to runner/)'
+        required: false
+        default: 'sample-packet.json'
+
+concurrency:
+  group: runner-execute-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout agent-runner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate packet
+        run: |
+          if [ ! -f "${{ inputs.packet_file }}" ]; then
+            echo "ERROR: ${{ inputs.packet_file }} not found"
+            exit 1
+          fi
+          python3 runner/validate_packet.py "${{ inputs.packet_file }}"
+
+      - name: Run pipeline
+        env:
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+          PROXY_API_KEY: ${{ secrets.PROXY_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ALLOWED_TARGET_REPOS: ${{ vars.ALLOWED_TARGET_REPOS }}
+        run: |
+          set -e
+          bash runner/checkout_target.sh "${{ inputs.packet_file }}" target-repo
+          bash runner/run_agent.sh "${{ inputs.packet_file }}" target-repo
+          PR_URL=$(bash runner/push_branch_and_pr.sh "${{ inputs.packet_file }}" target-repo)
+          python3 runner/report_result.py "${{ inputs.packet_file }}" "$PR_URL" .runner/result.json
+          cat .runner/result.json

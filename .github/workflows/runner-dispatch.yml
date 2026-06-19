@@ -1,0 +1,128 @@
+name: Public Runner Dispatch
+
+on:
+  repository_dispatch:
+    types: [task-packet]
+  workflow_dispatch:
+    inputs:
+      packet_json:
+        description: 'Task packet JSON (stringified)'
+        required: true
+        type: string
+
+concurrency:
+  group: runner-dispatch-${{ github.event.client_payload.task_id || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout agent-runner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Extract packet from event
+        id: packet
+        env:
+          EVENT_PAYLOAD: ${{ toJSON(github.event) }}
+        run: |
+          set -euo pipefail
+          mkdir -p .runner
+          echo "$EVENT_PAYLOAD" | python3 -c '
+          import json, sys, os
+          event = json.load(sys.stdin)
+          # repository_dispatch puts payload in client_payload, workflow_dispatch in inputs
+          payload = event.get("client_payload", {}) or event.get("inputs", {})
+          packet_json = payload.get("packet_json")
+          if packet_json is None:
+              print("ERROR: no packet_json in event payload", file=sys.stderr)
+              sys.exit(1)
+          if isinstance(packet_json, str):
+              data = json.loads(packet_json)
+          else:
+              data = packet_json
+          with open(".runner/packet.json", "w") as f:
+              json.dump(data, f, indent=2)
+          print("Wrote .runner/packet.json")
+          '
+
+      - name: Validate packet
+        run: python3 runner/validate_packet.py .runner/packet.json
+
+      - name: Secret guard on packet
+        run: python3 runner/secret_guard.py .runner/packet.json
+
+      - name: Checkout target repo
+        env:
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+          ALLOWED_TARGET_REPOS: ${{ vars.ALLOWED_TARGET_REPOS }}
+        run: bash runner/checkout_target.sh .runner/packet.json target-repo
+
+      - name: Run agent
+        env:
+          PROXY_API_KEY: ${{ secrets.PROXY_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: bash runner/run_agent.sh .runner/packet.json target-repo
+
+      - name: Secret guard on generated files
+        run: |
+          python3 - <<'PY'
+          import sys, os
+          from pathlib import Path
+          sys.path.insert(0, "runner")
+          from secret_guard import main as sg
+          root = Path("target-repo")
+          if not root.exists():
+              print("No target-repo, skipping secret scan")
+              sys.exit(0)
+          violations = []
+          for p in root.rglob("*"):
+              if p.is_file() and p.stat().st_size < 1_000_000:
+                  try:
+                      sg(str(p))
+                  except SystemExit as e:
+                      violations.append((str(p), str(e)))
+          if violations:
+              print("SECRET VIOLATIONS:")
+              for path, msg in violations:
+                  print(f"  {path}: {msg}")
+              sys.exit(1)
+          print("All generated files passed secret guard")
+          PY
+
+      - name: Push branch and open PR
+        env:
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+          GIT_USER_NAME: public-runner-bot
+          GIT_USER_EMAIL: bot@public-runner.local
+        run: |
+          PR_URL=$(bash runner/push_branch_and_pr.sh .runner/packet.json target-repo)
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+        id: push
+
+      - name: Report result
+        if: always()
+        env:
+          PR_URL: ${{ steps.push.outputs.pr_url }}
+        run: |
+          python3 runner/report_result.py .runner/packet.json "${PR_URL:-}" .runner/result.json || true
+          echo "Result:"
+          cat .runner/result.json

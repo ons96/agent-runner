@@ -13,14 +13,50 @@ Thin cron + dispatcher. Reads `ons96/task-board`, posts a digest of the top
 `status:new` issues every hour. Anyone (user, bot, another workflow) can
 read that digest and pick a job.
 
-## What this is NOT
+## What this is NOT (yet)
 
 - Not a self-contained AI agent runner. Public GitHub runners cannot reach
-  the Tailscale-only vps-gateway at 100.71.95.75:8000, so the workflow does
-  not call `opencode run` directly.
+  the Tailscale-only vps-gateway at 100.71.95.75:8000 over Tailscale, so the
+  workflow does not call `opencode run` directly. (The public IP
+  40.233.101.233:8000 IS reachable from public runners, but the scaffold
+  leaves that as a deployment choice via `secrets.PROXY_API_KEY` + baseURL.)
 - Not a replacement for VPS-side cron. The VPS task-board-loop is the
   primary work runner (faster, direct gateway access, can hold long
   sessions). GH Actions is a backup when that VPS is offline.
+
+## Workflows
+
+| workflow              | trigger                          | what it does                                |
+| --------------------- | -------------------------------- | ------------------------------------------- |
+| `hourly-digest.yml`   | cron (hourly)                    | post digest of `status:new` top 5 issues    |
+| `runner-dispatch.yml` | `repository_dispatch:task-packet`| run full Option B pipeline (validate + run + push + PR) |
+| `runner-execute.yml`  | `workflow_dispatch` (manual)     | same as runner-dispatch but manual entry    |
+
+## Option B pipeline (runner-dispatch.yml)
+
+A VPS (or any client) POSTs a `repository_dispatch` event of type
+`task-packet` to this repo with a stringified JSON `packet_json` payload.
+The workflow:
+
+1. Validates the packet (full or minimal format)
+2. Scans the packet for leaked secrets
+3. Clones the target repo, checks out base branch, creates work branch
+4. Runs the agent (opencode > oh-my-opencode > direct LLM cascade)
+5. Scans generated files for secrets
+6. Pushes work branch, opens PR against target_repo
+7. Reports result metadata back to caller via artifact
+
+Per-dispatch secrets required (configure in repo Settings -> Secrets):
+
+- `TARGET_REPO_TOKEN` — PAT with `repo` scope to clone/push target repos
+- `PROXY_API_KEY` — gateway API key (VPS gateway or equivalent)
+- `GROQ_API_KEY` — optional Groq fallback
+- `LLM_API_KEY` — optional direct LLM provider key
+
+Per-dispatch vars (configure in repo Settings -> Variables):
+
+- `ALLOWED_TARGET_REPOS` — newline-separated list of `owner/repo` strings.
+  Empty = allow all (insecure). Recommended: allowlist target repos.
 
 ## Why two layers?
 
@@ -29,15 +65,15 @@ read that digest and pick a job.
 | uptime                  | depends on 1GB VPS     | GitHub-managed, ~99.9%  |
 | minutes / month         | free (own machine)     | free (public repo)      |
 | secrets storage         | local .env             | GH Secrets              |
-| gateway reach           | direct                 | unreachable             |
-| full agent capability   | yes (opencode run)     | no (digest only)        |
+| gateway reach           | direct (Tailscale)     | public IP only          |
+| full agent capability   | yes (opencode run)     | yes (Option B)          |
 | max session length      | unbounded              | 5-90 min/job (free)     |
 | dispatch latency        | seconds                | minute after cron fire  |
-| rate limit handling     | direct model fallback  | n/a (digest only)       |
+| rate limit handling     | direct model fallback  | same (gateway cascade)  |
 
-The GH Actions tier cannot replace the VPS tier for heavy work, but it can
-guarantee the queue gets read every hour even when the VPS is down. When a
-digest comment appears, a human (or a self-hosted runner) can take over.
+The GH Actions tier is now a full fallback: when the VPS is down, the
+Option B dispatch still produces work via the public runner, just slower
+and on a longer time budget.
 
 ## Future extension
 

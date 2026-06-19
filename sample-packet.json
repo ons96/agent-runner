@@ -1,0 +1,16 @@
+{
+  "task_id": "smoke-2026-06-19-001",
+  "staging_repo": "ons96/vps-gh-agent-loop",
+  "target_repo": "ons96/agent-runner-smoke-target",
+  "target_branch": "main",
+  "work_branch": "agent/smoke-001",
+  "task_summary": "Add timestamp to README.md",
+  "task": "Add a line with the current ISO timestamp at the top of README.md",
+  "allowed_paths": ["README.md"],
+  "acceptance_criteria": [
+    "First line of README.md contains a UTC ISO timestamp",
+    "Commit message contains 'feat(runner)'",
+    "Branch is 'agent/smoke-001'"
+  ],
+  "merge_policy": "open_pr"
+}
