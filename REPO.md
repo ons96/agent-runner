@@ -18,7 +18,7 @@ read that digest and pick a job.
 - Not a self-contained AI agent runner. Public GitHub runners cannot reach
   the Tailscale-only vps-gateway at 100.71.95.75:8000 over Tailscale, so the
   workflow does not call `opencode run` directly. (The public IP
-  40.233.101.233:8000 IS reachable from public runners, but the scaffold
+  <VPS40_IP>:8000 IS reachable from public runners, but the scaffold
   leaves that as a deployment choice via `secrets.PROXY_API_KEY` + baseURL.)
 - Not a replacement for VPS-side cron. The VPS task-board-loop is the
   primary work runner (faster, direct gateway access, can hold long
